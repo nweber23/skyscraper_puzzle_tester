@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
 	"strconv"
 	"strings"
@@ -181,4 +182,54 @@ func BuildErrorCases(n int, order ViewOrder) []ErrorCase {
 		{Name: "negative number", Args: []string{strings.Join(negative, " ")}},
 		{Name: "unsolvable view combination", Args: []string{unsolvableString}},
 	}
+}
+
+// TestCase is one fully-built test to run against the tested binary: a
+// fuzz case (well-formed, solvable input with known target views) or an
+// error case (deliberately invalid input).
+type TestCase struct {
+	Name      string
+	IsFuzz    bool
+	N         int
+	Grid      [][]int // nil for error cases
+	ColTop    []int
+	ColBottom []int
+	RowLeft   []int
+	RowRight  []int
+	Args      []string
+}
+
+// BuildTestQueue builds the full ordered list of test cases for one run:
+// `runs` random fuzz cases followed by one case per BuildErrorCases
+// category, all for an NxN grid.
+func BuildTestQueue(n, runs int, order ViewOrder) []TestCase {
+	cases := make([]TestCase, 0, runs+11)
+
+	for i := 0; i < runs; i++ {
+		grid := GenerateSolvedGrid(n)
+		colTop, colBottom, rowLeft, rowRight := ComputeViews(grid)
+		args := []string{FormatViewString(colTop, colBottom, rowLeft, rowRight, order)}
+		cases = append(cases, TestCase{
+			Name:      fmt.Sprintf("fuzz #%d", i+1),
+			IsFuzz:    true,
+			N:         n,
+			Grid:      grid,
+			ColTop:    colTop,
+			ColBottom: colBottom,
+			RowLeft:   rowLeft,
+			RowRight:  rowRight,
+			Args:      args,
+		})
+	}
+
+	for _, ec := range BuildErrorCases(n, order) {
+		cases = append(cases, TestCase{
+			Name:   ec.Name,
+			IsFuzz: false,
+			N:      n,
+			Args:   ec.Args,
+		})
+	}
+
+	return cases
 }

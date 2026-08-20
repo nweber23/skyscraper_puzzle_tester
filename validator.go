@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // Mismatch describes one view-count discrepancy between the value derived
 // from a candidate grid and the target value under test.
@@ -123,4 +127,112 @@ func ValidateGrid(grid [][]int, colTop, colBottom, rowLeft, rowRight []int) (ok 
 	}
 
 	return len(mismatches) == 0, mismatches, nil
+}
+
+// ParseGrid extracts an NxN grid from the tested binary's stdout. It
+// accepts one row per non-blank line, columns separated by whitespace, and
+// tolerates blank lines around the grid. Returns ok=false if the output
+// doesn't contain exactly n non-blank lines of exactly n integers each.
+func ParseGrid(output string, n int) ([][]int, bool) {
+	if n <= 0 {
+		return nil, false
+	}
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return nil, false
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	rows := make([][]int, 0, n)
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != n {
+			return nil, false
+		}
+		row := make([]int, n)
+		for i, f := range fields {
+			v, err := strconv.Atoi(f)
+			if err != nil {
+				return nil, false
+			}
+			row[i] = v
+		}
+		rows = append(rows, row)
+	}
+
+	if len(rows) != n {
+		return nil, false
+	}
+	return rows, true
+}
+
+// TestResult is the outcome of running and evaluating one TestCase.
+type TestResult struct {
+	Case       TestCase
+	Passed     bool
+	Reason     string
+	Stdout     string
+	Mismatches []Mismatch
+	PermErrors []string
+	ParsedGrid [][]int // set when the binary's output parsed as an NxN grid
+	TimedOut   bool
+}
+
+// EvaluateResult judges a raw subprocess Result against the expectations
+// encoded in TestCase:
+//   - For fuzz cases (well-formed, solvable input), the binary must print a
+//     grid that satisfies ValidateGrid against the case's target views.
+//   - For error cases (deliberately invalid input), the binary must either
+//     print exactly "Error" or otherwise not print a valid-looking grid.
+//   - Any exec-level failure or timeout is always a failure.
+func EvaluateResult(tc TestCase, res Result) TestResult {
+	tr := TestResult{Case: tc, Stdout: res.Stdout, TimedOut: res.TimedOut}
+
+	if res.Err != nil {
+		tr.Passed = false
+		tr.Reason = "exec error: " + res.Err.Error()
+		return tr
+	}
+
+	if res.TimedOut {
+		tr.Passed = false
+		tr.Reason = "timed out"
+		return tr
+	}
+
+	if tc.IsFuzz {
+		grid, ok := ParseGrid(res.Stdout, tc.N)
+		if !ok {
+			tr.Passed = false
+			tr.Reason = "output did not contain a parseable NxN grid"
+			return tr
+		}
+		tr.ParsedGrid = grid
+		valid, mismatches, permErrors := ValidateGrid(grid, tc.ColTop, tc.ColBottom, tc.RowLeft, tc.RowRight)
+		tr.Mismatches = mismatches
+		tr.PermErrors = permErrors
+		tr.Passed = valid
+		if !valid {
+			tr.Reason = "grid failed constraint validation"
+		}
+		return tr
+	}
+
+	if strings.TrimSpace(res.Stdout) == "Error" {
+		tr.Passed = true
+		tr.Reason = "printed Error as expected"
+		return tr
+	}
+	if grid, ok := ParseGrid(res.Stdout, tc.N); ok {
+		tr.ParsedGrid = grid
+		tr.Passed = false
+		tr.Reason = "printed a grid for invalid input instead of failing"
+		return tr
+	}
+	tr.Passed = true
+	tr.Reason = "did not print a valid grid (no crash)"
+	return tr
 }
