@@ -1,6 +1,10 @@
 package main
 
-import "math/rand"
+import (
+	"math/rand"
+	"strconv"
+	"strings"
+)
 
 // GenerateSolvedGrid produces a random NxN grid where every row and column
 // is a permutation of 1..N, using randomized backtracking: at each cell it
@@ -79,4 +83,102 @@ func ComputeViews(grid [][]int) (colTop, colBottom, rowLeft, rowRight []int) {
 	}
 
 	return colTop, colBottom, rowLeft, rowRight
+}
+
+// ViewOrder controls how the 4N view values are serialized into the single
+// argument string passed to the tested binary.
+type ViewOrder string
+
+const (
+	// OrderClockwise lists values clockwise starting at the top-left: top
+	// (left-to-right), right (top-to-bottom), bottom (right-to-left), left
+	// (bottom-to-top). This is the most common Rush01 subject convention.
+	OrderClockwise ViewOrder = "clockwise"
+	// OrderSimple lists values as four straight blocks: top, bottom, left,
+	// right, each in left-to-right / top-to-bottom order.
+	OrderSimple ViewOrder = "simple"
+)
+
+// FormatViewString serializes the 4N view values into the single
+// space-separated argument string the tested binary expects.
+func FormatViewString(colTop, colBottom, rowLeft, rowRight []int, order ViewOrder) string {
+	values := make([]int, 0, 4*len(colTop))
+
+	switch order {
+	case OrderSimple:
+		values = append(values, colTop...)
+		values = append(values, colBottom...)
+		values = append(values, rowLeft...)
+		values = append(values, rowRight...)
+	default: // OrderClockwise
+		values = append(values, colTop...)
+		values = append(values, rowRight...)
+		values = append(values, reverse(colBottom)...)
+		values = append(values, reverse(rowLeft)...)
+	}
+
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = strconv.Itoa(v)
+	}
+	return strings.Join(parts, " ")
+}
+
+// ErrorCase describes one invalid-input scenario to feed the tested binary.
+// A correct implementation is expected to reject it (print "Error" and/or
+// exit non-zero) without printing a valid-looking grid.
+type ErrorCase struct {
+	Name string
+	Args []string
+}
+
+// BuildErrorCases returns one ErrorCase per invalid-input category for grid
+// size n: argument count, value count, value range, non-numeric input,
+// empty/whitespace input, leading zero, negative number, and a
+// well-formed-but-unsolvable clue combination. Requires n >= 2.
+func BuildErrorCases(n int, order ViewOrder) []ErrorCase {
+	grid := GenerateSolvedGrid(n)
+	colTop, colBottom, rowLeft, rowRight := ComputeViews(grid)
+	validString := FormatViewString(colTop, colBottom, rowLeft, rowRight, order)
+	values := strings.Fields(validString)
+
+	tooFew := strings.Join(values[:len(values)-1], " ")
+	tooMany := validString + " 1"
+
+	outOfRange := append([]string(nil), values...)
+	outOfRange[0] = strconv.Itoa(n + 1)
+
+	nonNumeric := append([]string(nil), values...)
+	nonNumeric[0] = "a"
+
+	leadingZero := append([]string(nil), values...)
+	leadingZero[0] = "0" + leadingZero[0]
+
+	negative := append([]string(nil), values...)
+	negative[0] = "-" + negative[0]
+
+	// A row that is fully increasing (rowLeft == n) forces a strictly
+	// increasing sequence, whose reverse is strictly decreasing and thus has
+	// visibility 1 from the other end. So rowLeft[0] == n and rowRight[0] ==
+	// n can never both hold for n > 1 — this combination is provably
+	// unsolvable without needing a solver. See TestVisibilityBothEndsMaxImpossible.
+	unsolvableRowLeft := append([]int(nil), rowLeft...)
+	unsolvableRowRight := append([]int(nil), rowRight...)
+	unsolvableRowLeft[0] = n
+	unsolvableRowRight[0] = n
+	unsolvableString := FormatViewString(colTop, colBottom, unsolvableRowLeft, unsolvableRowRight, order)
+
+	return []ErrorCase{
+		{Name: "no arguments", Args: []string{}},
+		{Name: "too many arguments", Args: []string{validString, "extra"}},
+		{Name: "too few values", Args: []string{tooFew}},
+		{Name: "too many values", Args: []string{tooMany}},
+		{Name: "value out of range", Args: []string{strings.Join(outOfRange, " ")}},
+		{Name: "non-numeric characters", Args: []string{strings.Join(nonNumeric, " ")}},
+		{Name: "empty string", Args: []string{""}},
+		{Name: "whitespace-only string", Args: []string{"   "}},
+		{Name: "leading zero", Args: []string{strings.Join(leadingZero, " ")}},
+		{Name: "negative number", Args: []string{strings.Join(negative, " ")}},
+		{Name: "unsolvable view combination", Args: []string{unsolvableString}},
+	}
 }

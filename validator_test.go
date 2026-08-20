@@ -97,3 +97,44 @@ func TestValidateGridSizeMismatch(t *testing.T) {
 		t.Fatalf("expected an error describing the size mismatch")
 	}
 }
+
+// TestVisibilityBothEndsMaxImpossible proves, by exhaustive enumeration,
+// that no permutation of 1..n (for n > 1) has visibility count n from both
+// ends simultaneously. This is the mathematical fact BuildErrorCases
+// (generator.go) relies on to construct a guaranteed-unsolvable clue
+// combination without needing a solver.
+func TestVisibilityBothEndsMaxImpossible(t *testing.T) {
+	for _, n := range []int{2, 3, 4, 5} {
+		perms := allPermutations(n)
+		for _, p := range perms {
+			forward := CountVisible(p)
+			backward := CountVisible(reverse(p))
+			if forward == n && backward == n {
+				t.Fatalf("n=%d: permutation %v has visibility %d from both ends, expected impossible", n, p, n)
+			}
+		}
+	}
+}
+
+// allPermutations returns every permutation of 1..n.
+func allPermutations(n int) [][]int {
+	base := make([]int, n)
+	for i := range base {
+		base[i] = i + 1
+	}
+	var out [][]int
+	var permute func(prefix, remaining []int)
+	permute = func(prefix, remaining []int) {
+		if len(remaining) == 0 {
+			out = append(out, append([]int(nil), prefix...))
+			return
+		}
+		for i, v := range remaining {
+			next := append([]int(nil), remaining[:i]...)
+			next = append(next, remaining[i+1:]...)
+			permute(append(prefix, v), next)
+		}
+	}
+	permute(nil, base)
+	return out
+}
