@@ -404,7 +404,7 @@ func main() {
 	runs := flag.Int("runs", 50, "number of fuzz test runs")
 	timeout := flag.Duration("timeout", 2*time.Second, "per-test-run timeout")
 	mandatoryFlag := flag.Bool("mandatory", false, "skip the menu and run mandatory (4x4) mode immediately")
-	orderFlag := flag.String("order", string(OrderClockwise), "clue order sent to the binary: clockwise or simple")
+	orderFlag := flag.String("order", string(OrderSimple), "clue order sent to the binary: clockwise or simple")
 	showVersion := flag.Bool("version", false, "print the tool version and exit")
 	flag.Parse()
 

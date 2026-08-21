@@ -121,7 +121,7 @@ m: menu, q: quit
 | `--runs` | `50` | Number of fuzz test runs |
 | `--timeout` | `2s` | Per-test-run timeout (Go duration syntax, e.g. `500ms`, `3s`) |
 | `--mandatory` | `false` | Skip the menu and immediately run mandatory (4x4) mode |
-| `--order` | `clockwise` | Clue order sent to the binary: `clockwise` or `simple` — match whichever convention your binary expects |
+| `--order` | `simple` | Clue order sent to the binary: `simple` (subject's worked example: colTop×4, colBottom×4, rowLeft×4, rowRight×4) or `clockwise` |
 | `--version` | — | Print the tool version and exit |
 
 ## How validation works
