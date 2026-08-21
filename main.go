@@ -402,7 +402,7 @@ func main() {
 	binPath := flag.String("bin", "./a.out", "path to the compiled Rush01 binary to test")
 	size := flag.Int("size", 4, "grid size for bonus mode (4-9); ignored in mandatory mode")
 	runs := flag.Int("runs", 50, "number of fuzz test runs")
-	timeout := flag.Duration("timeout", 2*time.Second, "per-test-run timeout")
+	timeout := flag.Duration("timeout", 5*time.Minute, "per-test-run timeout")
 	mandatoryFlag := flag.Bool("mandatory", false, "skip the menu and run mandatory (4x4) mode immediately")
 	orderFlag := flag.String("order", string(OrderSimple), "clue order sent to the binary: clockwise or simple")
 	showVersion := flag.Bool("version", false, "print the tool version and exit")

@@ -119,7 +119,7 @@ m: menu, q: quit
 | `--bin` | `./a.out` | Path to the compiled Rush01 binary under test |
 | `--size` | `4` | Grid size for bonus mode (4-9); ignored in mandatory mode |
 | `--runs` | `50` | Number of fuzz test runs |
-| `--timeout` | `2s` | Per-test-run timeout (Go duration syntax, e.g. `500ms`, `3s`) |
+| `--timeout` | `5m` | Per-test-run timeout (Go duration syntax, e.g. `500ms`, `3s`, `5m`) — a run exceeding this is killed and auto-failed |
 | `--mandatory` | `false` | Skip the menu and immediately run mandatory (4x4) mode |
 | `--order` | `simple` | Clue order sent to the binary: `simple` (subject's worked example: colTop×4, colBottom×4, rowLeft×4, rowRight×4) or `clockwise` |
 | `--version` | — | Print the tool version and exit |
