@@ -242,6 +242,19 @@ func (m model) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// countLabel renders "passed/total" for one category, styled green when
+// everything passed and red when at least one case in the category failed.
+func countLabel(passed, total int) string {
+	label := fmt.Sprintf("%d/%d", passed, total)
+	if total == 0 {
+		return styleDim.Render(label)
+	}
+	if passed == total {
+		return stylePass.Render(label)
+	}
+	return styleFail.Render(label)
+}
+
 func (m model) failedResults() []TestResult {
 	var out []TestResult
 	for _, r := range m.results {
@@ -333,13 +346,27 @@ func (m model) viewRunning() string {
 
 func (m model) viewSummary() string {
 	var b strings.Builder
-	passed := 0
+
+	var fuzzPassed, fuzzTotal, errPassed, errTotal int
 	for _, r := range m.results {
-		if r.Passed {
-			passed++
+		if r.Case.IsFuzz {
+			fuzzTotal++
+			if r.Passed {
+				fuzzPassed++
+			}
+		} else {
+			errTotal++
+			if r.Passed {
+				errPassed++
+			}
 		}
 	}
-	b.WriteString(styleTitle.Render(fmt.Sprintf("Results: %d/%d passed", passed, len(m.results))) + "\n\n")
+	passed := fuzzPassed + errPassed
+
+	b.WriteString(styleTitle.Render(fmt.Sprintf("Results: %d/%d passed", passed, len(m.results))) + "\n")
+	b.WriteString(fmt.Sprintf("  %s puzzle solving\n", countLabel(fuzzPassed, fuzzTotal)))
+	b.WriteString(fmt.Sprintf("  %s error handling\n", countLabel(errPassed, errTotal)))
+	b.WriteString("\n")
 
 	for _, r := range m.results {
 		mark := stylePass.Render("PASS")
