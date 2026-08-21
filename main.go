@@ -378,7 +378,12 @@ func renderFailure(r TestResult) string {
 	}
 
 	if r.ParsedGrid != nil {
-		b.WriteString("\ngrid:\n" + renderGrid(r.ParsedGrid))
+		if r.Case.IsFuzz && r.Case.ColTop != nil {
+			b.WriteString("\ngrid (with expected top/bottom/left/right clues):\n" +
+				renderAnnotatedGrid(r.ParsedGrid, r.Case.ColTop, r.Case.ColBottom, r.Case.RowLeft, r.Case.RowRight))
+		} else {
+			b.WriteString("\ngrid:\n" + renderGrid(r.ParsedGrid))
+		}
 	} else if r.Stdout != "" {
 		b.WriteString("\nraw output:\n" + r.Stdout)
 	}
@@ -395,6 +400,39 @@ func renderGrid(grid [][]int) string {
 		}
 		b.WriteString(strings.Join(cells, " ") + "\n")
 	}
+	return b.String()
+}
+
+// renderAnnotatedGrid renders grid surrounded by its expected clue values
+// (colTop above, colBottom below, rowLeft/rowRight beside each row) so a
+// mismatch can be counter-checked by hand against the subject's appendix
+// layout.
+func renderAnnotatedGrid(grid [][]int, colTop, colBottom, rowLeft, rowRight []int) string {
+	n := len(grid)
+	pad := strings.Repeat(" ", 2)
+
+	cols := func(vals []int) string {
+		cells := make([]string, n)
+		for i, v := range vals {
+			cells[i] = strconv.Itoa(v)
+		}
+		return strings.Join(cells, " ")
+	}
+
+	border := "+" + strings.Repeat("-", 2*n+1) + "+"
+
+	var b strings.Builder
+	b.WriteString(pad + cols(colTop) + "\n")
+	b.WriteString(pad + border + "\n")
+	for i, row := range grid {
+		cells := make([]string, n)
+		for j, v := range row {
+			cells[j] = strconv.Itoa(v)
+		}
+		b.WriteString(fmt.Sprintf("%d | %s | %d\n", rowLeft[i], strings.Join(cells, " "), rowRight[i]))
+	}
+	b.WriteString(pad + border + "\n")
+	b.WriteString(pad + cols(colBottom) + "\n")
 	return b.String()
 }
 
