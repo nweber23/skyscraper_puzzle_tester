@@ -436,7 +436,11 @@ func renderGrid(grid [][]int) string {
 // layout.
 func renderAnnotatedGrid(grid [][]int, colTop, colBottom, rowLeft, rowRight []int) string {
 	n := len(grid)
-	pad := strings.Repeat(" ", 2)
+	// Rows are formatted as "N | cells | N", so cell columns start 4
+	// characters in (digit + space + pipe + space); the border's pipes
+	// align 2 characters in, right after the row-label digit and space.
+	borderPad := strings.Repeat(" ", 2)
+	headerPad := strings.Repeat(" ", 4)
 
 	cols := func(vals []int) string {
 		cells := make([]string, n)
@@ -449,8 +453,8 @@ func renderAnnotatedGrid(grid [][]int, colTop, colBottom, rowLeft, rowRight []in
 	border := "+" + strings.Repeat("-", 2*n+1) + "+"
 
 	var b strings.Builder
-	b.WriteString(pad + cols(colTop) + "\n")
-	b.WriteString(pad + border + "\n")
+	b.WriteString(headerPad + cols(colTop) + "\n")
+	b.WriteString(borderPad + border + "\n")
 	for i, row := range grid {
 		cells := make([]string, n)
 		for j, v := range row {
@@ -458,8 +462,8 @@ func renderAnnotatedGrid(grid [][]int, colTop, colBottom, rowLeft, rowRight []in
 		}
 		b.WriteString(fmt.Sprintf("%d | %s | %d\n", rowLeft[i], strings.Join(cells, " "), rowRight[i]))
 	}
-	b.WriteString(pad + border + "\n")
-	b.WriteString(pad + cols(colBottom) + "\n")
+	b.WriteString(borderPad + border + "\n")
+	b.WriteString(headerPad + cols(colBottom) + "\n")
 	return b.String()
 }
 
