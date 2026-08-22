@@ -72,6 +72,13 @@ type model struct {
 	progress progress.Model
 	resultCh chan testDoneMsg
 
+	// Summary-screen state, computed once when the run finishes (allDoneMsg)
+	// rather than on every render/keypress, since results can number in the
+	// hundreds of thousands.
+	failures              []TestResult
+	fuzzPassed, fuzzTotal int
+	errPassed, errTotal   int
+
 	selectedFailure int
 }
 
@@ -168,6 +175,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForResultCmd(m.resultCh)
 	case allDoneMsg:
 		m.screen = screenSummary
+		m.failures = nil
+		m.fuzzPassed, m.fuzzTotal, m.errPassed, m.errTotal = 0, 0, 0, 0
+		for _, r := range m.results {
+			if r.Case.IsFuzz {
+				m.fuzzTotal++
+				if r.Passed {
+					m.fuzzPassed++
+				}
+			} else {
+				m.errTotal++
+				if r.Passed {
+					m.errPassed++
+				}
+			}
+			if !r.Passed {
+				m.failures = append(m.failures, r)
+			}
+		}
 		return m, nil
 	}
 	return m, nil
@@ -272,7 +297,7 @@ func (m model) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "up", "k":
-		if m.selectedFailure < len(m.failedResults())-1 {
+		if m.selectedFailure < len(m.failures)-1 {
 			m.selectedFailure++
 		}
 	case "down", "j":
@@ -297,16 +322,6 @@ func countLabel(passed, total int) string {
 		return stylePass.Render(label)
 	}
 	return styleFail.Render(label)
-}
-
-func (m model) failedResults() []TestResult {
-	var out []TestResult
-	for _, r := range m.results {
-		if !r.Passed {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 func (m model) View() string {
@@ -388,44 +403,39 @@ func (m model) viewRunning() string {
 		fmt.Sprintf("%d/%d complete", m.received, len(m.queue))
 }
 
+// maxListedResults caps the per-test PASS/FAIL listing on the summary
+// screen. Building and redrawing one line per test for runs in the
+// hundreds of thousands makes every keypress (e.g. browsing failures)
+// visibly laggy, so beyond this size we fall back to just the counts and
+// the failure browser below.
+const maxListedResults = 2000
+
 func (m model) viewSummary() string {
 	var b strings.Builder
 
-	var fuzzPassed, fuzzTotal, errPassed, errTotal int
-	for _, r := range m.results {
-		if r.Case.IsFuzz {
-			fuzzTotal++
-			if r.Passed {
-				fuzzPassed++
-			}
-		} else {
-			errTotal++
-			if r.Passed {
-				errPassed++
-			}
-		}
-	}
-	passed := fuzzPassed + errPassed
-
+	passed := m.fuzzPassed + m.errPassed
 	b.WriteString(styleTitle.Render(fmt.Sprintf("Results: %d/%d passed", passed, len(m.results))) + "\n")
-	b.WriteString(fmt.Sprintf("  %s puzzle solving\n", countLabel(fuzzPassed, fuzzTotal)))
-	b.WriteString(fmt.Sprintf("  %s error handling\n", countLabel(errPassed, errTotal)))
+	b.WriteString(fmt.Sprintf("  %s puzzle solving\n", countLabel(m.fuzzPassed, m.fuzzTotal)))
+	b.WriteString(fmt.Sprintf("  %s error handling\n", countLabel(m.errPassed, m.errTotal)))
 	b.WriteString("\n")
 
-	for _, r := range m.results {
-		mark := stylePass.Render("PASS")
-		if !r.Passed {
-			mark = styleFail.Render("FAIL")
+	if len(m.results) <= maxListedResults {
+		for _, r := range m.results {
+			mark := stylePass.Render("PASS")
+			if !r.Passed {
+				mark = styleFail.Render("FAIL")
+			}
+			b.WriteString(fmt.Sprintf("%s %s\n", mark, r.Case.Name))
 		}
-		b.WriteString(fmt.Sprintf("%s %s\n", mark, r.Case.Name))
+	} else {
+		b.WriteString(styleDim.Render(fmt.Sprintf("(%d results - too many to list, see failure browser below)", len(m.results))) + "\n")
 	}
 
-	failures := m.failedResults()
-	if len(failures) > 0 {
+	if len(m.failures) > 0 {
 		b.WriteString("\n" + styleTitle.Render("Failure detail") + "\n\n")
-		fr := failures[m.selectedFailure]
+		fr := m.failures[m.selectedFailure]
 		b.WriteString(renderFailure(fr))
-		b.WriteString(fmt.Sprintf("\n%s", styleDim.Render(fmt.Sprintf("failure %d/%d - up/down to browse", m.selectedFailure+1, len(failures)))))
+		b.WriteString(fmt.Sprintf("\n%s", styleDim.Render(fmt.Sprintf("failure %d/%d - up/down to browse", m.selectedFailure+1, len(m.failures)))))
 	}
 
 	b.WriteString("\n\n" + styleDim.Render("m: menu, q: quit"))
