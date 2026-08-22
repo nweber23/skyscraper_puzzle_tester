@@ -165,15 +165,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case testDoneMsg:
 		m.results[msg.index] = msg.result
 		m.received++
-		cmd := m.progress.SetPercent(float64(m.received) / float64(len(m.queue)))
-		return m, tea.Batch(cmd, waitForResultCmd(m.resultCh))
+		return m, waitForResultCmd(m.resultCh)
 	case allDoneMsg:
 		m.screen = screenSummary
 		return m, nil
-	case progress.FrameMsg:
-		newModel, cmd := m.progress.Update(msg)
-		m.progress = newModel.(progress.Model)
-		return m, cmd
 	}
 	return m, nil
 }
@@ -221,12 +216,12 @@ func (m model) updateSizePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "enter":
 		m.screen = screenMenu
 	case "up", "k":
-		if m.size < 9 {
-			m.size++
-		}
-	case "down", "j":
 		if m.size > 4 {
 			m.size--
+		}
+	case "down", "j":
+		if m.size < 9 {
+			m.size++
 		}
 	}
 	return m, nil
@@ -277,12 +272,12 @@ func (m model) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "up", "k":
-		if m.selectedFailure > 0 {
-			m.selectedFailure--
-		}
-	case "down", "j":
 		if m.selectedFailure < len(m.failedResults())-1 {
 			m.selectedFailure++
+		}
+	case "down", "j":
+		if m.selectedFailure > 0 {
+			m.selectedFailure--
 		}
 	case "m":
 		m.screen = screenMenu
@@ -384,8 +379,12 @@ func (m model) viewRunsInput() string {
 }
 
 func (m model) viewRunning() string {
+	percent := 0.0
+	if len(m.queue) > 0 {
+		percent = float64(m.received) / float64(len(m.queue))
+	}
 	return styleTitle.Render(fmt.Sprintf("Running tests (%d workers)", m.cfg.workers)) + "\n\n" +
-		m.progress.View() + "\n\n" +
+		m.progress.ViewAs(percent) + "\n\n" +
 		fmt.Sprintf("%d/%d complete", m.received, len(m.queue))
 }
 
