@@ -4,8 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
@@ -49,6 +51,7 @@ type config struct {
 	binPath string
 	timeout time.Duration
 	order   ViewOrder
+	workers int
 }
 
 // model is the bubbletea model driving the whole TUI.
@@ -65,8 +68,9 @@ type model struct {
 
 	queue    []TestCase
 	results  []TestResult
-	index    int
+	received int
 	progress progress.Model
+	resultCh chan testDoneMsg
 
 	selectedFailure int
 }
@@ -85,22 +89,64 @@ func initialModel(cfg config) model {
 
 func (m model) Init() tea.Cmd {
 	if m.screen == screenRunning {
-		return runNextTestCmd(m)
+		return waitForResultCmd(m.resultCh)
 	}
 	return nil
 }
 
 type testDoneMsg struct {
+	index  int
 	result TestResult
 }
 
-func runNextTestCmd(m model) tea.Cmd {
-	tc := m.queue[m.index]
-	cfg := m.cfg
+type allDoneMsg struct{}
+
+// waitForResultCmd blocks on the shared results channel and returns the
+// next completed test as a message, or allDoneMsg once the worker pool has
+// finished every case and closed the channel.
+func waitForResultCmd(ch chan testDoneMsg) tea.Cmd {
 	return func() tea.Msg {
-		res := RunBinary(cfg.binPath, tc.Args, cfg.timeout)
-		return testDoneMsg{result: EvaluateResult(tc, res)}
+		msg, ok := <-ch
+		if !ok {
+			return allDoneMsg{}
+		}
+		return msg
 	}
+}
+
+// runQueue fans a test queue out across a pool of worker goroutines, each
+// running one test case at a time via RunBinary, and streams results back
+// on out as they complete (out is closed once every case has finished).
+func runQueue(cfg config, queue []TestCase, out chan<- testDoneMsg) {
+	workers := cfg.workers
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(queue) {
+		workers = len(queue)
+	}
+
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				tc := queue[idx]
+				res := RunBinary(cfg.binPath, tc.Args, cfg.timeout)
+				out <- testDoneMsg{index: idx, result: EvaluateResult(tc, res)}
+			}
+		}()
+	}
+
+	for i := range queue {
+		jobs <- i
+	}
+	close(jobs)
+
+	wg.Wait()
+	close(out)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -117,14 +163,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSummary(msg)
 		}
 	case testDoneMsg:
-		m.results = append(m.results, msg.result)
-		m.index++
-		if m.index >= len(m.queue) {
-			m.screen = screenSummary
-			return m, nil
-		}
-		cmd := m.progress.SetPercent(float64(m.index) / float64(len(m.queue)))
-		return m, tea.Batch(cmd, runNextTestCmd(m))
+		m.results[msg.index] = msg.result
+		m.received++
+		cmd := m.progress.SetPercent(float64(m.received) / float64(len(m.queue)))
+		return m, tea.Batch(cmd, waitForResultCmd(m.resultCh))
+	case allDoneMsg:
+		m.screen = screenSummary
+		return m, nil
 	case progress.FrameMsg:
 		newModel, cmd := m.progress.Update(msg)
 		m.progress = newModel.(progress.Model)
@@ -215,12 +260,16 @@ func (m model) startRun() (tea.Model, tea.Cmd) {
 		n = m.size
 	}
 	m.queue = BuildTestQueue(n, m.runs, m.cfg.order)
-	m.results = nil
-	m.index = 0
+	m.results = make([]TestResult, len(m.queue))
+	m.received = 0
 	m.selectedFailure = 0
 	m.screen = screenRunning
 	m.progress = progress.New(progress.WithDefaultGradient())
-	return m, runNextTestCmd(m)
+
+	m.resultCh = make(chan testDoneMsg)
+	go runQueue(m.cfg, m.queue, m.resultCh)
+
+	return m, waitForResultCmd(m.resultCh)
 }
 
 func (m model) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -335,13 +384,9 @@ func (m model) viewRunsInput() string {
 }
 
 func (m model) viewRunning() string {
-	name := ""
-	if m.index < len(m.queue) {
-		name = m.queue[m.index].Name
-	}
-	return styleTitle.Render("Running tests") + "\n\n" +
+	return styleTitle.Render(fmt.Sprintf("Running tests (%d workers)", m.cfg.workers)) + "\n\n" +
 		m.progress.View() + "\n\n" +
-		fmt.Sprintf("%d/%d - %s", m.index, len(m.queue), name)
+		fmt.Sprintf("%d/%d complete", m.received, len(m.queue))
 }
 
 func (m model) viewSummary() string {
@@ -474,6 +519,7 @@ func main() {
 	timeout := flag.Duration("timeout", 5*time.Minute, "per-test-run timeout")
 	mandatoryFlag := flag.Bool("mandatory", false, "skip the menu and run mandatory (4x4) mode immediately")
 	orderFlag := flag.String("order", string(OrderSimple), "clue order sent to the binary: clockwise or simple")
+	parallel := flag.Int("parallel", runtime.NumCPU(), "number of test cases to run concurrently")
 	showVersion := flag.Bool("version", false, "print the tool version and exit")
 	flag.Parse()
 
@@ -490,6 +536,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "--runs must be positive")
 		os.Exit(1)
 	}
+	if *parallel <= 0 {
+		fmt.Fprintln(os.Stderr, "--parallel must be positive")
+		os.Exit(1)
+	}
 
 	order := ViewOrder(*orderFlag)
 	if order != OrderClockwise && order != OrderSimple {
@@ -497,7 +547,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	cfg := config{binPath: *binPath, timeout: *timeout, order: order}
+	cfg := config{binPath: *binPath, timeout: *timeout, order: order, workers: *parallel}
 	m := initialModel(cfg)
 	m.size = *size
 	m.runs = *runs
