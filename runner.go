@@ -17,11 +17,12 @@ type Result struct {
 }
 
 // RunBinary executes path with args, capturing stdout and killing the
-// process group if it runs longer than timeout. Killing the whole process
+// process group if it runs longer than timeout or if ctx is canceled first
+// (e.g. the caller aborting a run in progress). Killing the whole process
 // group (not just the direct child) catches runaway children the tested
 // binary might spawn.
-func RunBinary(path string, args []string, timeout time.Duration) Result {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func RunBinary(ctx context.Context, path string, args []string, timeout time.Duration) Result {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, args...)

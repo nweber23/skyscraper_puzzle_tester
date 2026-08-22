@@ -1,13 +1,14 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestRunBinaryCapturesStdoutAndExitCode(t *testing.T) {
-	res := RunBinary("/bin/sh", []string{"-c", "echo hello"}, time.Second)
+	res := RunBinary(context.Background(), "/bin/sh", []string{"-c", "echo hello"}, time.Second)
 	if res.Err != nil {
 		t.Fatalf("unexpected exec error: %v", res.Err)
 	}
@@ -23,7 +24,7 @@ func TestRunBinaryCapturesStdoutAndExitCode(t *testing.T) {
 }
 
 func TestRunBinaryReportsNonZeroExit(t *testing.T) {
-	res := RunBinary("/bin/sh", []string{"-c", "exit 3"}, time.Second)
+	res := RunBinary(context.Background(), "/bin/sh", []string{"-c", "exit 3"}, time.Second)
 	if res.Err != nil {
 		t.Fatalf("unexpected exec error: %v", res.Err)
 	}
@@ -36,15 +37,24 @@ func TestRunBinaryReportsNonZeroExit(t *testing.T) {
 }
 
 func TestRunBinaryTimesOut(t *testing.T) {
-	res := RunBinary("/bin/sh", []string{"-c", "sleep 5"}, 200*time.Millisecond)
+	res := RunBinary(context.Background(), "/bin/sh", []string{"-c", "sleep 5"}, 200*time.Millisecond)
 	if !res.TimedOut {
 		t.Fatalf("expected TimedOut = true")
 	}
 }
 
 func TestRunBinaryMissingExecutable(t *testing.T) {
-	res := RunBinary("/no/such/binary-rush01-tester", nil, time.Second)
+	res := RunBinary(context.Background(), "/no/such/binary-rush01-tester", nil, time.Second)
 	if res.Err == nil {
 		t.Fatalf("expected exec error for missing binary")
+	}
+}
+
+func TestRunBinaryStopsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res := RunBinary(ctx, "/bin/sh", []string{"-c", "sleep 5"}, time.Second)
+	if res.Err == nil && !res.TimedOut {
+		t.Fatalf("expected an error or timeout for an already-canceled context")
 	}
 }

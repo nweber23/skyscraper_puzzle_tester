@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -24,6 +25,7 @@ const (
 	screenMenu screen = iota
 	screenSizePicker
 	screenRunsInput
+	screenBuilding
 	screenRunning
 	screenSummary
 )
@@ -66,11 +68,13 @@ type model struct {
 	runs      int
 	runsInput string
 
-	queue    []TestCase
-	results  []TestResult
-	received int
-	progress progress.Model
-	resultCh chan testDoneMsg
+	queue      []TestCase
+	results    []TestResult
+	received   int
+	progress   progress.Model
+	resultCh   chan testDoneMsg
+	cancelRun  context.CancelFunc
+	cancelling bool
 
 	// Summary-screen state, computed once when the run finishes (allDoneMsg)
 	// rather than on every render/keypress, since results can number in the
@@ -80,6 +84,15 @@ type model struct {
 	errPassed, errTotal   int
 
 	selectedFailure int
+}
+
+// gridSize returns the NxN grid size for the run about to start: a fixed
+// 4x4 in mandatory mode, or the user-selected size in bonus mode.
+func (m model) gridSize() int {
+	if m.mandatory {
+		return 4
+	}
+	return m.size
 }
 
 func initialModel(cfg config) model {
@@ -95,7 +108,10 @@ func initialModel(cfg config) model {
 }
 
 func (m model) Init() tea.Cmd {
-	if m.screen == screenRunning {
+	switch m.screen {
+	case screenBuilding:
+		return buildQueueCmd(m.gridSize(), m.runs, m.cfg.order, m.cfg.workers)
+	case screenRunning:
 		return waitForResultCmd(m.resultCh)
 	}
 	return nil
@@ -107,6 +123,18 @@ type testDoneMsg struct {
 }
 
 type allDoneMsg struct{}
+
+type queueBuiltMsg struct {
+	queue []TestCase
+}
+
+// buildQueueCmd builds the test queue off the UI goroutine so a large
+// --runs value doesn't freeze the TUI before the first test even starts.
+func buildQueueCmd(n, runs int, order ViewOrder, workers int) tea.Cmd {
+	return func() tea.Msg {
+		return queueBuiltMsg{queue: BuildTestQueue(n, runs, order, workers)}
+	}
+}
 
 // waitForResultCmd blocks on the shared results channel and returns the
 // next completed test as a message, or allDoneMsg once the worker pool has
@@ -123,8 +151,9 @@ func waitForResultCmd(ch chan testDoneMsg) tea.Cmd {
 
 // runQueue fans a test queue out across a pool of worker goroutines, each
 // running one test case at a time via RunBinary, and streams results back
-// on out as they complete (out is closed once every case has finished).
-func runQueue(cfg config, queue []TestCase, out chan<- testDoneMsg) {
+// on out as they complete (out is closed once every case has finished, or
+// once ctx is canceled and every in-flight subprocess has been killed).
+func runQueue(ctx context.Context, cfg config, queue []TestCase, out chan<- testDoneMsg) {
 	workers := cfg.workers
 	if workers < 1 {
 		workers = 1
@@ -141,14 +170,23 @@ func runQueue(cfg config, queue []TestCase, out chan<- testDoneMsg) {
 			defer wg.Done()
 			for idx := range jobs {
 				tc := queue[idx]
-				res := RunBinary(cfg.binPath, tc.Args, cfg.timeout)
-				out <- testDoneMsg{index: idx, result: EvaluateResult(tc, res)}
+				res := RunBinary(ctx, cfg.binPath, tc.Args, cfg.timeout)
+				select {
+				case out <- testDoneMsg{index: idx, result: EvaluateResult(tc, res)}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}()
 	}
 
+feedJobs:
 	for i := range queue {
-		jobs <- i
+		select {
+		case jobs <- i:
+		case <-ctx.Done():
+			break feedJobs
+		}
 	}
 	close(jobs)
 
@@ -166,14 +204,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSizePicker(msg)
 		case screenRunsInput:
 			return m.updateRunsInput(msg)
+		case screenBuilding:
+			return m.updateBuilding(msg)
+		case screenRunning:
+			return m.updateRunning(msg)
 		case screenSummary:
 			return m.updateSummary(msg)
 		}
+	case queueBuiltMsg:
+		m.queue = msg.queue
+		m.results = make([]TestResult, len(m.queue))
+		m.received = 0
+		m.screen = screenRunning
+		m.progress = progress.New(progress.WithDefaultGradient())
+
+		ctx, cancel := context.WithCancel(context.Background())
+		m.cancelRun = cancel
+		m.resultCh = make(chan testDoneMsg)
+		go runQueue(ctx, m.cfg, m.queue, m.resultCh)
+
+		return m, waitForResultCmd(m.resultCh)
 	case testDoneMsg:
 		m.results[msg.index] = msg.result
 		m.received++
 		return m, waitForResultCmd(m.resultCh)
 	case allDoneMsg:
+		if m.cancelling {
+			return m, tea.Quit
+		}
 		m.screen = screenSummary
 		m.failures = nil
 		m.fuzzPassed, m.fuzzTotal, m.errPassed, m.errTotal = 0, 0, 0, 0
@@ -275,21 +333,37 @@ func (m model) updateRunsInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) startRun() (tea.Model, tea.Cmd) {
-	n := 4
-	if !m.mandatory {
-		n = m.size
-	}
-	m.queue = BuildTestQueue(n, m.runs, m.cfg.order, m.cfg.workers)
-	m.results = make([]TestResult, len(m.queue))
-	m.received = 0
 	m.selectedFailure = 0
-	m.screen = screenRunning
-	m.progress = progress.New(progress.WithDefaultGradient())
+	m.cancelling = false
+	m.screen = screenBuilding
+	return m, buildQueueCmd(m.gridSize(), m.runs, m.cfg.order, m.cfg.workers)
+}
 
-	m.resultCh = make(chan testDoneMsg)
-	go runQueue(m.cfg, m.queue, m.resultCh)
+func (m model) updateBuilding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		// Queue building is pure CPU work with no subprocesses to clean up,
+		// so it's safe to quit immediately rather than waiting it out.
+		return m, tea.Quit
+	}
+	return m, nil
+}
 
-	return m, waitForResultCmd(m.resultCh)
+// updateRunning handles input while tests are executing. Quitting here
+// cancels the shared context so every in-flight subprocess is killed, then
+// waits for the worker pool to fully drain (allDoneMsg) before exiting -
+// quitting immediately would leave orphaned child processes running.
+func (m model) updateRunning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		if !m.cancelling {
+			m.cancelling = true
+			if m.cancelRun != nil {
+				m.cancelRun()
+			}
+		}
+	}
+	return m, nil
 }
 
 func (m model) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -332,6 +406,8 @@ func (m model) View() string {
 		return m.viewSizePicker()
 	case screenRunsInput:
 		return m.viewRunsInput()
+	case screenBuilding:
+		return m.viewBuilding()
 	case screenRunning:
 		return m.viewRunning()
 	case screenSummary:
@@ -393,14 +469,26 @@ func (m model) viewRunsInput() string {
 		styleDim.Render("digits only, enter to confirm, esc to cancel")
 }
 
+func (m model) viewBuilding() string {
+	return styleTitle.Render("Building test queue") + "\n\n" +
+		fmt.Sprintf("generating %d test cases...", m.runs) + "\n\n" +
+		styleDim.Render("q: cancel")
+}
+
 func (m model) viewRunning() string {
 	percent := 0.0
 	if len(m.queue) > 0 {
 		percent = float64(m.received) / float64(len(m.queue))
 	}
+	status := fmt.Sprintf("%d/%d complete", m.received, len(m.queue))
+	footer := styleDim.Render("q: cancel")
+	if m.cancelling {
+		status = styleFail.Render("cancelling - waiting for in-flight tests to stop...")
+		footer = ""
+	}
 	return styleTitle.Render(fmt.Sprintf("Running tests (%d workers)", m.cfg.workers)) + "\n\n" +
 		m.progress.ViewAs(percent) + "\n\n" +
-		fmt.Sprintf("%d/%d complete", m.received, len(m.queue))
+		status + "\n\n" + footer
 }
 
 // maxListedResults caps the per-test PASS/FAIL listing on the summary
