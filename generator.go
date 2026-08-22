@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // GenerateSolvedGrid produces a random NxN grid where every row and column
@@ -201,34 +202,61 @@ type TestCase struct {
 
 // BuildTestQueue builds the full ordered list of test cases for one run:
 // `runs` random fuzz cases followed by one case per BuildErrorCases
-// category, all for an NxN grid.
-func BuildTestQueue(n, runs int, order ViewOrder) []TestCase {
-	cases := make([]TestCase, 0, runs+11)
+// category, all for an NxN grid. Fuzz case generation is CPU-bound (random
+// backtracking per grid) and independent per case, so it's fanned out
+// across workers goroutines - for large `runs` this is the difference
+// between a near-instant queue and a multi-second freeze before the first
+// test even starts.
+func BuildTestQueue(n, runs int, order ViewOrder, workers int) []TestCase {
+	errorCases := BuildErrorCases(n, order)
+	cases := make([]TestCase, runs+len(errorCases))
 
-	for i := 0; i < runs; i++ {
-		grid := GenerateSolvedGrid(n)
-		colTop, colBottom, rowLeft, rowRight := ComputeViews(grid)
-		args := []string{FormatViewString(colTop, colBottom, rowLeft, rowRight, order)}
-		cases = append(cases, TestCase{
-			Name:      fmt.Sprintf("fuzz #%d", i+1),
-			IsFuzz:    true,
-			N:         n,
-			Grid:      grid,
-			ColTop:    colTop,
-			ColBottom: colBottom,
-			RowLeft:   rowLeft,
-			RowRight:  rowRight,
-			Args:      args,
-		})
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > runs {
+		workers = runs
 	}
 
-	for _, ec := range BuildErrorCases(n, order) {
-		cases = append(cases, TestCase{
+	if runs > 0 {
+		jobs := make(chan int)
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := range jobs {
+					grid := GenerateSolvedGrid(n)
+					colTop, colBottom, rowLeft, rowRight := ComputeViews(grid)
+					args := []string{FormatViewString(colTop, colBottom, rowLeft, rowRight, order)}
+					cases[i] = TestCase{
+						Name:      fmt.Sprintf("fuzz #%d", i+1),
+						IsFuzz:    true,
+						N:         n,
+						Grid:      grid,
+						ColTop:    colTop,
+						ColBottom: colBottom,
+						RowLeft:   rowLeft,
+						RowRight:  rowRight,
+						Args:      args,
+					}
+				}
+			}()
+		}
+		for i := 0; i < runs; i++ {
+			jobs <- i
+		}
+		close(jobs)
+		wg.Wait()
+	}
+
+	for i, ec := range errorCases {
+		cases[runs+i] = TestCase{
 			Name:   ec.Name,
 			IsFuzz: false,
 			N:      n,
 			Args:   ec.Args,
-		})
+		}
 	}
 
 	return cases

@@ -91,7 +91,7 @@ type testExecError struct{}
 func (*testExecError) Error() string { return "boom" }
 
 func TestBuildTestQueueShape(t *testing.T) {
-	queue := BuildTestQueue(4, 5, OrderClockwise)
+	queue := BuildTestQueue(4, 5, OrderClockwise, 2)
 	if len(queue) != 5+11 {
 		t.Fatalf("queue length = %d, want %d", len(queue), 5+11)
 	}

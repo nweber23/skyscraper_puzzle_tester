@@ -279,7 +279,7 @@ func (m model) startRun() (tea.Model, tea.Cmd) {
 	if !m.mandatory {
 		n = m.size
 	}
-	m.queue = BuildTestQueue(n, m.runs, m.cfg.order)
+	m.queue = BuildTestQueue(n, m.runs, m.cfg.order, m.cfg.workers)
 	m.results = make([]TestResult, len(m.queue))
 	m.received = 0
 	m.selectedFailure = 0
